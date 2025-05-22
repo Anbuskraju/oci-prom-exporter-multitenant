@@ -1,8 +1,259 @@
 metrics:
-  - namespace: "oci_computeagent"
+  # Compute Instance Agent Metrics
+  - namespace: oci_computeagent
     names:
-      - "CpuUtilization"
-      - "MemoryUtilization"
-      - "MemoryAvailable"
-      - "DiskBytesRead"
-      - "DiskBytesWritten"
+      - CpuUtilization
+      - MemoryUtilization
+      - MemoryAvailable
+      - MemoryUsed
+      - NetworkIn
+      - NetworkOut
+      - DiskBytesRead
+      - DiskBytesWritten
+      - DiskIopsRead
+      - DiskIopsWritten
+      - DiskUtilization
+      - FilesystemUsage
+      - FilesystemUtilization
+
+  # Block Volume
+  - namespace: oci_blockstorage
+    names:
+      - VolumeReadOps
+      - VolumeWriteOps
+      - VolumeReadBytes
+      - VolumeWriteBytes
+      - VolumeThroughputRead
+      - VolumeThroughputWrite
+      - VolumeLatencyRead
+      - VolumeLatencyWrite
+
+  # API Gateway
+  - namespace: oci_apigateway
+    names:
+      - Count
+      - Latency
+      - Status2XX
+      - Status4XX
+      - Status5XX
+      - IntegrationLatency
+      - IntegrationCount
+      - IntegrationStatus2XX
+      - IntegrationStatus4XX
+      - IntegrationStatus5XX
+
+  # Database (Autonomous, Exadata, etc.)
+  - namespace: oci_database
+    names:
+      - CpuUtilization
+      - IOPS
+      - StorageUtilization
+      - Sessions
+      - ActiveSessions
+      - WaitTime
+      - UserCalls
+      - ParseCalls
+      - ParseFailCount
+      - PhysicalReads
+      - PhysicalWrites
+      - RedoWrites
+      - LogicalReads
+      - Executions
+      - HardParseCount
+      - SoftParseCount
+      - Sorts
+      - TableScans
+      - Transactions
+      - NetworkTraffic
+
+  # Object Storage
+  - namespace: oci_objectstorage
+    names:
+      - GetObject
+      - PutObject
+      - DeleteObject
+      - HeadObject
+      - ListObjects
+      - CopyObject
+      - RestoreObject
+      - ObjectCount
+      - ObjectSize
+      - StorageUtilization
+      - StorageFree
+      - StorageUsed
+
+  # Load Balancer
+  - namespace: oci_loadbalancer
+    names:
+      - BackendHealthyHostCount
+      - BackendUnhealthyHostCount
+      - BackendTimedoutHostCount
+      - BackendRefusedHostCount
+      - BackendErrorHostCount
+      - BackendResponseTime
+      - BackendRequestCount
+      - BackendResponseCount
+      - Backend5xxCount
+      - Backend4xxCount
+      - Backend2xxCount
+      - Backend3xxCount
+      - BackendActiveConnections
+      - BackendIdleConnections
+      - BackendEstablishedConnections
+      - BackendFailedConnections
+      - BackendConnectionErrors
+      - BackendThroughput
+      - BackendBandwidth
+
+  # File Storage
+  - namespace: oci_filestorage
+    names:
+      - FilesystemUtilization
+      - FilesystemUsedBytes
+      - FilesystemFreeBytes
+      - FilesystemInodes
+      - FilesystemInodesUsed
+      - FilesystemInodesFree
+      - FilesystemThroughputRead
+      - FilesystemThroughputWrite
+      - FilesystemIopsRead
+      - FilesystemIopsWrite
+      - FilesystemLatencyRead
+      - FilesystemLatencyWrite
+
+  # Functions
+  - namespace: oci_functions
+    names:
+      - FunctionInvocations
+      - FunctionErrors
+      - FunctionDuration
+      - FunctionThrottles
+      - FunctionConcurrentExecutions
+
+  # Networking (VCN/Core)
+  - namespace: oci_core
+    names:
+      - VnicBytesIn
+      - VnicBytesOut
+      - VnicPacketsIn
+      - VnicPacketsOut
+      - VnicPacketsInDropped
+      - VnicPacketsOutDropped
+      - VnicErrorsIn
+      - VnicErrorsOut
+      - VnicUtilizationIn
+      - VnicUtilizationOut
+      - VcnFlowLogs
+
+  # Kubernetes Engine (OKE)
+  - namespace: oci_containerengine
+    names:
+      - NodeCpuUtilization
+      - NodeMemoryUtilization
+      - NodeNetworkIn
+      - NodeNetworkOut
+      - NodeDiskReadOps
+      - NodeDiskWriteOps
+      - NodeDiskReadBytes
+      - NodeDiskWriteBytes
+      - NodePodCount
+      - NodePodCapacity
+      - NodePodUtilization
+
+  # Email Delivery
+  - namespace: oci_email
+    names:
+      - AcceptedEmailCount
+      - DeliveredEmailCount
+      - BouncedEmailCount
+      - ComplainedEmailCount
+      - SuppressedEmailCount
+      - RejectedEmailCount
+
+  # DNS
+  - namespace: oci_dns
+    names:
+      - QueryCount
+      - QueryErrorCount
+      - QueryLatency
+      - QueryNXDOMAINCount
+      - QuerySERVFAILCount
+
+  # Health Checks
+  - namespace: oci_healthchecks
+    names:
+      - HealthCheckStatus
+      - HealthCheckLatency
+      - HealthCheckErrorCount
+
+  # Streaming
+  - namespace: oci_streaming
+    names:
+      - StreamMessages
+      - StreamBytes
+      - StreamLag
+      - StreamThroughput
+      - StreamConsumerLag
+      - StreamPartitionCount
+
+  # DevOps
+  - namespace: oci_devops
+    names:
+      - BuildRunCount
+      - BuildRunDuration
+      - DeploymentRunCount
+      - DeploymentRunDuration
+      - BuildRunSuccessCount
+      - BuildRunFailureCount
+      - DeploymentRunSuccessCount
+      - DeploymentRunFailureCount
+
+  # Logging
+  - namespace: oci_logging
+    names:
+      - LogCount
+      - LogErrorCount
+      - LogWarningCount
+      - LogInfoCount
+      - LogThroughput
+
+  # Vault
+  - namespace: oci_vault
+    names:
+      - SecretVersionCount
+      - KeyCount
+      - SecretCount
+      - VaultUsage
+      - VaultThroughput
+
+  # Autonomous Recovery Service
+  - namespace: oci_recovery_service
+    names:
+      - SpaceUsedForRecoveryWindow
+      - ProtectedDatabaseSize
+      - ProtectedDatabaseHealth
+      - DataLossExposure
+
+  # Bastion
+  - namespace: oci_bastion
+    names:
+      - ActiveSessions
+      - FailedSessions
+      - SessionDuration
+
+  # OCI Cache (Redis)
+  - namespace: oci_redis
+    names:
+      - CPUUtilization
+      - MemoryUtilization
+      - NetworkBytesIn
+      - NetworkBytesOut
+      - UsedMemory
+      - KeyspaceHits
+      - ConnectedClients
+      - EvictedKeys
+      - ReplicationLag
+      - KeyspaceMisses
+      - PrimaryReplicaOffset
+      - ExpiredKeys
+
