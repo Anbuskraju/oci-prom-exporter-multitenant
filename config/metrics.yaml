@@ -1,0 +1,8 @@
+metrics:
+  - namespace: "oci_computeagent"
+    names:
+      - "CpuUtilization"
+      - "MemoryUtilization"
+      - "MemoryAvailable"
+      - "DiskBytesRead"
+      - "DiskBytesWritten"

@@ -1,0 +1,9 @@
+tenancies:
+  - name: tenant-a
+    tenancy_id: "ocid1.tenancy.oc1..aaaa"
+    compartment_id: "ocid1.compartment.oc1..root"
+    region: "us-ashburn-1"
+  - name: tenant-b
+    tenancy_id: "ocid1.tenancy.oc1..bbbb"
+    compartment_id: "ocid1.compartment.oc1..root"
+    region: "ap-hyderabad-1"
