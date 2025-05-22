@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -16,127 +17,136 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type Tenancy struct {
+	Name          string `yaml:"name"`
+	TenancyID     string `yaml:"tenancy_id"`
+	CompartmentID string `yaml:"compartment_id"`
+	Region        string `yaml:"region"`
+}
+
 type TenancyConfig struct {
-	Tenancies []struct {
-		Name          string `yaml:"name"`
-		TenancyID     string `yaml:"tenancy_id"`
-		CompartmentID string `yaml:"compartment_id"`
-		Region        string `yaml:"region"`
-	} `yaml:"tenancies"`
+	Tenancies []Tenancy `yaml:"tenancies"`
+}
+
+type MetricNamespace struct {
+	Namespace string   `yaml:"namespace"`
+	Names     []string `yaml:"names"`
 }
 
 type MetricConfig struct {
-	Metrics []struct {
-		Namespace string   `yaml:"namespace"`
-		Names     []string `yaml:"names"`
-	} `yaml:"metrics"`
+	Metrics []MetricNamespace `yaml:"metrics"`
 }
 
-var metricGauge = prometheus.NewGaugeVec(
+var ociMetric = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "oci_metric_value",
-		Help: "Generic OCI metric collector",
+		Help: "OCI Monitoring metric value",
 	},
 	[]string{"tenancy", "region", "namespace", "metric", "resource", "name"},
 )
 
 func init() {
-	prometheus.MustRegister(metricGauge)
+	prometheus.MustRegister(ociMetric)
 }
 
-func loadYAMLConfigs() (TenancyConfig, MetricConfig) {
+func loadConfigs() (TenancyConfig, MetricConfig) {
 	var tenants TenancyConfig
 	var metrics MetricConfig
 
-	tBytes, err := ioutil.ReadFile("config/tenants.yaml")
+	tenantsFile, err := ioutil.ReadFile("config/tenants.yaml")
 	if err != nil {
-		log.Fatalf("Error reading tenants.yaml: %v", err)
+		log.Fatalf("Cannot read tenants.yaml: %v", err)
 	}
-	err = yaml.Unmarshal(tBytes, &tenants)
-	if err != nil {
-		log.Fatalf("Error parsing tenants.yaml: %v", err)
+	if err := yaml.Unmarshal(tenantsFile, &tenants); err != nil {
+		log.Fatalf("Invalid tenants.yaml: %v", err)
 	}
 
-	mBytes, err := ioutil.ReadFile("config/metrics.yaml")
+	metricsFile, err := ioutil.ReadFile("config/metrics.yaml")
 	if err != nil {
-		log.Fatalf("Error reading metrics.yaml: %v", err)
+		log.Fatalf("Cannot read metrics.yaml: %v", err)
 	}
-	err = yaml.Unmarshal(mBytes, &metrics)
-	if err != nil {
-		log.Fatalf("Error parsing metrics.yaml: %v", err)
+	if err := yaml.Unmarshal(metricsFile, &metrics); err != nil {
+		log.Fatalf("Invalid metrics.yaml: %v", err)
 	}
 
 	return tenants, metrics
 }
 
-func collectMetrics() {
-	tenants, metrics := loadYAMLConfigs()
-
+func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig, metrics MetricConfig) {
 	for _, tenant := range tenants.Tenancies {
-		provider := common.NewRawConfigurationProvider(
-			tenant.TenancyID,
-			os.Getenv("OCI_USER_ID"),
-			tenant.Region,
-			os.Getenv("OCI_KEY_FINGERPRINT"),
-			os.Getenv("OCI_PRIVATE_KEY_PATH"),
-			nil,
-		)
-
 		client, err := monitoring.NewMonitoringClientWithConfigurationProvider(provider)
 		if err != nil {
 			log.Printf("Error creating monitoring client for %s: %v", tenant.Name, err)
 			continue
 		}
+		client.SetRegion(tenant.Region)
 
-		now := time.Now().UTC()
-		start := now.Add(-5 * time.Minute)
+		start := time.Now().UTC().Add(-5 * time.Minute)
+		end := time.Now().UTC()
 
 		for _, m := range metrics.Metrics {
 			for _, name := range m.Names {
 				query := fmt.Sprintf("%s[1m].mean{}", name)
+
 				request := monitoring.SummarizeMetricsDataRequest{
-					Namespace:                &m.Namespace,
-					CompartmentId:            &tenant.CompartmentID,
-					IsCompartmentIdInSubtree: common.Bool(true),
-					Query:                    &query,
-					StartTime:                &start,
-					EndTime:                  &now,
+					CompartmentId:          common.String(tenant.CompartmentID),
+					CompartmentIdInSubtree: common.Bool(true),
+					SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
+						Namespace: common.String(m.Namespace),
+						Query:     common.String(query),
+						StartTime: &start,
+						EndTime:   &end,
+					},
 				}
 
-				resp, err := client.SummarizeMetricsData(context.Background(), request)
+				response, err := client.SummarizeMetricsData(context.Background(), request)
 				if err != nil {
-					log.Printf("Error fetching metrics from %s/%s: %v", m.Namespace, name, err)
+					log.Printf("Failed to get metric %s from %s: %v", name, tenant.Name, err)
 					continue
 				}
 
-				for _, item := range resp.SummarizeMetricsDataResponseDetails {
-					for _, point := range item.AggregatedDatapoints {
-						resource := item.Dimensions["resourceId"]
-						displayName := item.Dimensions["resourceDisplayName"]
-						metricGauge.With(prometheus.Labels{
+				for _, item := range response.Items {
+					for _, dp := range item.AggregatedDatapoints {
+						ociMetric.With(prometheus.Labels{
 							"tenancy":   tenant.Name,
 							"region":    tenant.Region,
 							"namespace": m.Namespace,
 							"metric":    name,
-							"resource":  resource,
-							"name":      displayName,
-						}).Set(*point.Value)
+							"resource":  item.Dimensions["resourceId"],
+							"name":      item.Dimensions["resourceDisplayName"],
+						}).Set(*dp.Value)
 					}
+				}
 			}
 		}
-	}
 	}
 }
 
 func main() {
+	configPath := flag.String("config", "", "Path to OCI API config file")
+	listen := flag.String("listen-address", ":8080", "Exporter listen address")
+	flag.Parse()
+
+	if *configPath == "" {
+		fmt.Println("Missing required flag: -config")
+		os.Exit(1)
+	}
+
+	provider, err := common.ConfigurationProviderFromFile(*configPath, "")
+	if err != nil {
+		log.Fatalf("Failed to load OCI config: %v", err)
+	}
+
+	tenants, metrics := loadConfigs()
+
 	go func() {
 		for {
-			collectMetrics()
+			collectMetrics(provider, tenants, metrics)
 			time.Sleep(60 * time.Second)
 		}
 	}()
 
 	http.Handle("/metrics", promhttp.Handler())
-	log.Println("Listening on :2112")
-	log.Fatal(http.ListenAndServe(":2112", nil))
+	log.Printf("Exporter running on %s", *listen)
+	log.Fatal(http.ListenAndServe(*listen, nil))
 }
