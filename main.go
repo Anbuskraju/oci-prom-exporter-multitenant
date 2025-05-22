@@ -161,14 +161,13 @@ func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig
 					"tenancy":         tenant.Name,
 					"region":          tenant.Region,
 					"namespace":       m.Namespace,
-					"metric":          item.Name,
+					"metric":          common.StringValue(item.Name),
 					"dimension_key":   dimKey,
 					"dimension_value": dimValue,
 				}).Set(*latest.Value)
 			}
 
-			// Sleep to prevent exceeding OCI's 10 TPS limit
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond) // rate limit
 		}
 	}
 }
