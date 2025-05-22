@@ -1,4 +1,4 @@
-module github.com/your-username/oci-prometheus-exporter
+module  oci-prom-exporter-multitenant
 
 go 1.21
 
