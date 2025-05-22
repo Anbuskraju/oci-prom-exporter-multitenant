@@ -29,8 +29,10 @@ type TenancyConfig struct {
 }
 
 type MetricNamespace struct {
-	Namespace string   `yaml:"namespace"`
-	Names     []string `yaml:"names"`
+	Namespace     string   `yaml:"namespace"`
+	Names         []string `yaml:"names"`
+	ResourceGroup string   `yaml:"resource_group,omitempty"`
+	Resolution    string   `yaml:"resolution,omitempty"`
 }
 
 type MetricConfig struct {
@@ -81,25 +83,36 @@ func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig
 		}
 		client.SetRegion(tenant.Region)
 
-		endTime := common.SDKTime{Time: time.Now().UTC()}
-		startTime := common.SDKTime{Time: endTime.Time.Add(-5 * time.Minute)}
+		current := time.Now().UTC().Add(-5 * time.Minute)
+		endTime := time.Now().UTC()
+
+		start := common.SDKTime{Time: current}
+		end := common.SDKTime{Time: endTime}
 
 		for _, m := range metrics.Metrics {
 			for _, metricName := range m.Names {
 				query := fmt.Sprintf("%s[1m].mean()", metricName)
 
-				request := monitoring.SummarizeMetricsDataRequest{
+				req := monitoring.SummarizeMetricsDataRequest{
 					CompartmentId:          common.String(tenant.CompartmentID),
 					CompartmentIdInSubtree: common.Bool(true),
 					SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
-						Namespace: common.String(m.Namespace),
-						Query:     common.String(query),
-						StartTime: &startTime,
-						EndTime:   &endTime,
+						Namespace:     common.String(m.Namespace),
+						Query:         common.String(query),
+						StartTime:     &start,
+						EndTime:       &end,
 					},
 				}
 
-				response, err := client.SummarizeMetricsData(context.Background(), request)
+				// Optional fields
+				if m.ResourceGroup != "" {
+					req.SummarizeMetricsDataDetails.ResourceGroup = common.String(m.ResourceGroup)
+				}
+				if m.Resolution != "" {
+					req.SummarizeMetricsDataDetails.Resolution = common.String(m.Resolution)
+				}
+
+				response, err := client.SummarizeMetricsData(context.Background(), req)
 				if err != nil {
 					log.Printf("Failed to get %s from %s: %v", metricName, tenant.Name, err)
 					continue
@@ -111,22 +124,23 @@ func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig
 					}
 					latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
 
-					// Pick one dimension key+value to use as Prometheus label
-					dimKey, dimValue := "unknown", "unknown"
-					for k, v := range item.Dimensions {
-						if v != "" {
-							dimKey = k
-							dimValue = v
-							break
+					dimKey, dimValue := "resourceId", item.Dimensions["resourceId"]
+					if dimValue == "" {
+						// fallback
+						for k, v := range item.Dimensions {
+							if v != "" {
+								dimKey, dimValue = k, v
+								break
+							}
 						}
 					}
 
 					ociMetric.With(prometheus.Labels{
-						"tenancy":        tenant.Name,
-						"region":         tenant.Region,
-						"namespace":      m.Namespace,
-						"metric":         metricName,
-						"dimension_key":  dimKey,
+						"tenancy":         tenant.Name,
+						"region":          tenant.Region,
+						"namespace":       m.Namespace,
+						"metric":          metricName,
+						"dimension_key":   dimKey,
 						"dimension_value": dimValue,
 					}).Set(*latest.Value)
 				}
