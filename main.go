@@ -42,7 +42,7 @@ var ociMetric = prometheus.NewGaugeVec(
 		Name: "oci_metric_value",
 		Help: "OCI Monitoring metric value",
 	},
-	[]string{"tenancy", "region", "namespace", "metric", "resource", "name"},
+	[]string{"tenancy", "region", "namespace", "metric", "dimension_key", "dimension_value"},
 )
 
 func init() {
@@ -81,12 +81,12 @@ func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig
 		}
 		client.SetRegion(tenant.Region)
 
-		start := time.Now().UTC().Add(-5 * time.Minute)
-		end := time.Now().UTC()
+		endTime := common.SDKTime{Time: time.Now().UTC()}
+		startTime := common.SDKTime{Time: endTime.Time.Add(-5 * time.Minute)}
 
 		for _, m := range metrics.Metrics {
-			for _, name := range m.Names {
-				query := fmt.Sprintf("%s[1m].mean{}", name)
+			for _, metricName := range m.Names {
+				query := fmt.Sprintf("%s[1m].mean()", metricName)
 
 				request := monitoring.SummarizeMetricsDataRequest{
 					CompartmentId:          common.String(tenant.CompartmentID),
@@ -94,28 +94,41 @@ func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig
 					SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
 						Namespace: common.String(m.Namespace),
 						Query:     common.String(query),
-						StartTime: &start,
-						EndTime:   &end,
+						StartTime: &startTime,
+						EndTime:   &endTime,
 					},
 				}
 
 				response, err := client.SummarizeMetricsData(context.Background(), request)
 				if err != nil {
-					log.Printf("Failed to get metric %s from %s: %v", name, tenant.Name, err)
+					log.Printf("Failed to get %s from %s: %v", metricName, tenant.Name, err)
 					continue
 				}
 
 				for _, item := range response.Items {
-					for _, dp := range item.AggregatedDatapoints {
-						ociMetric.With(prometheus.Labels{
-							"tenancy":   tenant.Name,
-							"region":    tenant.Region,
-							"namespace": m.Namespace,
-							"metric":    name,
-							"resource":  item.Dimensions["resourceId"],
-							"name":      item.Dimensions["resourceDisplayName"],
-						}).Set(*dp.Value)
+					if len(item.AggregatedDatapoints) == 0 {
+						continue
 					}
+					latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
+
+					// Pick one dimension key+value to use as Prometheus label
+					dimKey, dimValue := "unknown", "unknown"
+					for k, v := range item.Dimensions {
+						if v != "" {
+							dimKey = k
+							dimValue = v
+							break
+						}
+					}
+
+					ociMetric.With(prometheus.Labels{
+						"tenancy":        tenant.Name,
+						"region":         tenant.Region,
+						"namespace":      m.Namespace,
+						"metric":         metricName,
+						"dimension_key":  dimKey,
+						"dimension_value": dimValue,
+					}).Set(*latest.Value)
 				}
 			}
 		}
