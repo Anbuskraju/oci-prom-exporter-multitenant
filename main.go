@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
@@ -74,6 +75,21 @@ func loadConfigs() (TenancyConfig, MetricConfig) {
 	return tenants, metrics
 }
 
+func summarizeMetricsWithRetry(client monitoring.MonitoringClient, request monitoring.SummarizeMetricsDataRequest) (monitoring.SummarizeMetricsDataResponse, error) {
+	var resp monitoring.SummarizeMetricsDataResponse
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err = client.SummarizeMetricsData(context.Background(), request)
+		if err == nil || !strings.Contains(err.Error(), "TooManyRequests") {
+			break
+		}
+		backoff := time.Duration(1<<attempt) * time.Second
+		log.Printf("Rate limit hit. Backing off for %v", backoff)
+		time.Sleep(backoff)
+	}
+	return resp, err
+}
+
 func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig, metrics MetricConfig) {
 	for _, tenant := range tenants.Tenancies {
 		client, err := monitoring.NewMonitoringClientWithConfigurationProvider(provider)
@@ -90,61 +106,69 @@ func collectMetrics(provider common.ConfigurationProvider, tenants TenancyConfig
 		end := common.SDKTime{Time: endTime}
 
 		for _, m := range metrics.Metrics {
+			if len(m.Names) == 0 {
+				continue
+			}
+
+			// Group metric names into a single MQL query
+			queries := []string{}
 			for _, metricName := range m.Names {
-				query := fmt.Sprintf("%s[1m].mean()", metricName)
+				queries = append(queries, fmt.Sprintf("%s[1m].mean()", metricName))
+			}
+			mql := strings.Join(queries, ",")
 
-				req := monitoring.SummarizeMetricsDataRequest{
-					CompartmentId:          common.String(tenant.CompartmentID),
-					CompartmentIdInSubtree: common.Bool(true),
-					SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
-						Namespace:     common.String(m.Namespace),
-						Query:         common.String(query),
-						StartTime:     &start,
-						EndTime:       &end,
-					},
-				}
+			req := monitoring.SummarizeMetricsDataRequest{
+				CompartmentId:          common.String(tenant.CompartmentID),
+				CompartmentIdInSubtree: common.Bool(true),
+				SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
+					Namespace: common.String(m.Namespace),
+					Query:     common.String(mql),
+					StartTime: &start,
+					EndTime:   &end,
+				},
+			}
 
-				// Optional fields
-				if m.ResourceGroup != "" {
-					req.SummarizeMetricsDataDetails.ResourceGroup = common.String(m.ResourceGroup)
-				}
-				if m.Resolution != "" {
-					req.SummarizeMetricsDataDetails.Resolution = common.String(m.Resolution)
-				}
+			if m.ResourceGroup != "" {
+				req.SummarizeMetricsDataDetails.ResourceGroup = common.String(m.ResourceGroup)
+			}
+			if m.Resolution != "" {
+				req.SummarizeMetricsDataDetails.Resolution = common.String(m.Resolution)
+			}
 
-				response, err := client.SummarizeMetricsData(context.Background(), req)
-				if err != nil {
-					log.Printf("Failed to get %s from %s: %v", metricName, tenant.Name, err)
+			response, err := summarizeMetricsWithRetry(client, req)
+			if err != nil {
+				log.Printf("Failed to query metrics for namespace %s in %s: %v", m.Namespace, tenant.Name, err)
+				continue
+			}
+
+			for _, item := range response.Items {
+				if len(item.AggregatedDatapoints) == 0 {
 					continue
 				}
+				latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
 
-				for _, item := range response.Items {
-					if len(item.AggregatedDatapoints) == 0 {
-						continue
-					}
-					latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
-
-					dimKey, dimValue := "resourceId", item.Dimensions["resourceId"]
-					if dimValue == "" {
-						// fallback
-						for k, v := range item.Dimensions {
-							if v != "" {
-								dimKey, dimValue = k, v
-								break
-							}
+				dimKey, dimValue := "resourceId", item.Dimensions["resourceId"]
+				if dimValue == "" {
+					for k, v := range item.Dimensions {
+						if v != "" {
+							dimKey, dimValue = k, v
+							break
 						}
 					}
-
-					ociMetric.With(prometheus.Labels{
-						"tenancy":         tenant.Name,
-						"region":          tenant.Region,
-						"namespace":       m.Namespace,
-						"metric":          metricName,
-						"dimension_key":   dimKey,
-						"dimension_value": dimValue,
-					}).Set(*latest.Value)
 				}
+
+				ociMetric.With(prometheus.Labels{
+					"tenancy":         tenant.Name,
+					"region":          tenant.Region,
+					"namespace":       m.Namespace,
+					"metric":          item.Name,
+					"dimension_key":   dimKey,
+					"dimension_value": dimValue,
+				}).Set(*latest.Value)
 			}
+
+			// Sleep to prevent exceeding OCI's 10 TPS limit
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }
