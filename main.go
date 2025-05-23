@@ -63,103 +63,95 @@ func loadConfigs() (TenancyConfig, MetricConfig) {
     return tenants, metrics
 }
 
-func summarizeWithRetry(client monitoring.MonitoringClient, req monitoring.SummarizeMetricsDataRequest) (monitoring.SummarizeMetricsDataResponse, error) {
+func summarizeWithRetry(client monitoring.MonitoringClient, req monitoring.SummarizeMetricsDataRequest) (
+    monitoring.SummarizeMetricsDataResponse, error,
+) {
     var resp monitoring.SummarizeMetricsDataResponse
     var err error
-    for attempt := 0; attempt < 3; attempt++ {
+    for i := 0; i < 3; i++ {
         resp, err = client.SummarizeMetricsData(context.Background(), req)
         if err == nil || !strings.Contains(err.Error(), "TooManyRequests") {
             return resp, err
         }
-        backoff := time.Duration(1<<attempt) * time.Second
+        backoff := time.Duration(1<<i) * time.Second
         log.Printf("TooManyRequests, backing off %v", backoff)
         time.Sleep(backoff)
     }
     return resp, err
 }
 
-func collectMetrics(client monitoring.MonitoringClient, gauge *prometheus.GaugeVec, tenants TenancyConfig, config MetricConfig) {
-    for _, t := range tenants.Tenancies {
-        client.SetRegion(t.Region)
+func collectMetrics(client monitoring.MonitoringClient, gauge *prometheus.GaugeVec,
+    tenants TenancyConfig, config MetricConfig,
+) {
+    for _, ten := range tenants.Tenancies {
+        client.SetRegion(ten.Region)
         now := time.Now().UTC()
         start := common.SDKTime{Time: now.Add(-1 * time.Minute)}
         end := common.SDKTime{Time: now}
 
         for _, ns := range config.Metrics {
-            if len(ns.Names) == 0 {
-                continue
-            }
+            for _, name := range ns.Names {
+                // Single metric query per call
+                query := fmt.Sprintf("%s[1m].mean()", name)
+                req := monitoring.SummarizeMetricsDataRequest{
+                    CompartmentId:          common.String(ten.CompartmentID),
+                    CompartmentIdInSubtree: common.Bool(true),
+                    SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
+                        Namespace: common.String(ns.Namespace),
+                        Query:     common.String(query),
+                        StartTime: &start,
+                        EndTime:   &end,
+                    },
+                }
+                if ns.ResourceGroup != "" {
+                    req.SummarizeMetricsDataDetails.ResourceGroup = common.String(ns.ResourceGroup)
+                }
+                if ns.Resolution != "" {
+                    req.SummarizeMetricsDataDetails.Resolution = common.String(ns.Resolution)
+                }
 
-            // grouped MQL query for this namespace
-            var parts []string
-            for _, m := range ns.Names {
-                parts = append(parts, fmt.Sprintf("%s[1m].mean()", m))
-            }
-            queryText := strings.Join(parts, ",")
-
-            req := monitoring.SummarizeMetricsDataRequest{
-                CompartmentId:          common.String(t.CompartmentID),
-                CompartmentIdInSubtree: common.Bool(true),
-                SummarizeMetricsDataDetails: monitoring.SummarizeMetricsDataDetails{
-                    Namespace: common.String(ns.Namespace),
-                    Query:     common.String(queryText),
-                    StartTime: &start,
-                    EndTime:   &end,
-                },
-            }
-            if ns.ResourceGroup != "" {
-                req.SummarizeMetricsDataDetails.ResourceGroup = common.String(ns.ResourceGroup)
-            }
-            if ns.Resolution != "" {
-                req.SummarizeMetricsDataDetails.Resolution = common.String(ns.Resolution)
-            }
-
-            resp, err := summarizeWithRetry(client, req)
-            if err != nil {
-                log.Printf("Error querying namespace %s: %v", ns.Namespace, err)
-            } else {
-                for _, item := range resp.Items {
-                    if len(item.AggregatedDatapoints) == 0 {
-                        continue
-                    }
-                    latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
-
-                    //  dimension label
-                    dimKey, dimVal := "resourceId", item.Dimensions["resourceId"]
-                    if dimVal == "" {
-                        for k, v := range item.Dimensions {
-                            if v != "" {
-                                dimKey, dimVal = k, v
-                                break
+                resp, err := summarizeWithRetry(client, req)
+                if err != nil {
+                    log.Printf("Error querying %s in %s: %v", name, ns.Namespace, err)
+                } else {
+                    for _, item := range resp.Items {
+                        if len(item.AggregatedDatapoints) == 0 {
+                            continue
+                        }
+                        latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
+                        dimKey, dimVal := "resourceId", item.Dimensions["resourceId"]
+                        if dimVal == "" {
+                            for k, v := range item.Dimensions {
+                                if v != "" {
+                                    dimKey, dimVal = k, v
+                                    break
+                                }
                             }
                         }
+                        metricLabel := ""
+                        if item.Name != nil {
+                            metricLabel = *item.Name
+                        }
+                        gauge.With(prometheus.Labels{
+                            "tenancy":         ten.Name,
+                            "region":          ten.Region,
+                            "namespace":       ns.Namespace,
+                            "metric":          metricLabel,
+                            "dimension_key":   dimKey,
+                            "dimension_value": dimVal,
+                        }).Set(*latest.Value)
                     }
-
-                    metricLabel := ""
-                    if item.Name != nil {
-                        metricLabel = *item.Name
-                    }
-
-                    gauge.With(prometheus.Labels{
-                        "tenancy":         t.Name,
-                        "region":          t.Region,
-                        "namespace":       ns.Namespace,
-                        "metric":          metricLabel,
-                        "dimension_key":   dimKey,
-                        "dimension_value": dimVal,
-                    }).Set(*latest.Value)
                 }
+                // rate limit: max 10 TPS
+                time.Sleep(100 * time.Millisecond)
             }
-
-            // Rate limit: max 10 TPS
-            time.Sleep(100 * time.Millisecond)
         }
     }
 }
 
 func main() {
-    configPath := flag.String("config", "", "Path to OCI config file")
-    listenAddr := flag.String("listen-address", ":8080", "Metrics listen address")
+    configPath := flag.String("config", "", "Path to OCI API config file")
+    listen := flag.String("listen-address", ":8080", "Metrics listen address")
     flag.Parse()
 
     if *configPath == "" {
@@ -173,12 +165,11 @@ func main() {
     }
     client, err := monitoring.NewMonitoringClientWithConfigurationProvider(provider)
     if err != nil {
-        log.Fatalf("Failed to create monitoring client: %v", err)
+        log.Fatalf("Error creating OCI client: %v", err)
     }
 
-    tenants, metricsCfg := loadConfigs()
+    tenants, metrics := loadConfigs()
 
-    // custom registry to expose only OCI metrics
     gauge := prometheus.NewGaugeVec(prometheus.GaugeOpts{
         Name: "oci_metric_value",
         Help: "OCI Monitoring metric value",
@@ -188,12 +179,12 @@ func main() {
 
     go func() {
         for {
-            collectMetrics(client, gauge, tenants, metricsCfg)
+            collectMetrics(client, gauge, tenants, metrics)
             time.Sleep(1 * time.Minute)
         }
     }()
 
     http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-    log.Printf("Exporter listening on %s", *listenAddr)
-    log.Fatal(http.ListenAndServe(*listenAddr, nil))
+    log.Printf("Exporter listening on %s", *listen)
+    log.Fatal(http.ListenAndServe(*listen, nil))
 }
