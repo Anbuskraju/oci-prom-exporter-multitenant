@@ -42,21 +42,6 @@ type MetricConfig struct {
     Metrics []MetricNamespace `yaml:"metrics"`
 }
 
-// ociMetric is a Prometheus gauge for OCI metrics, labeled by tenancy, region, namespace, metric, resource_id, resource_display_name.
-var ociMetric = prometheus.NewGaugeVec(
-    prometheus.GaugeOpts{
-        Name: "oci_metric_value",
-        Help: "OCI Monitoring metric value",
-    },
-    []string{"tenancy", "region", "namespace", "metric", "resource_id", "resource_display_name"},
-)
-
-func init() {
-    // Register only the OCI metric gauge in the default registry
-    prometheus.MustRegister(ociMetric)
-}
-
-// loadConfigs reads tenants.yaml and metrics.yaml from config directory.
 func loadConfigs() (TenancyConfig, MetricConfig) {
     var tenants TenancyConfig
     var metrics MetricConfig
@@ -96,8 +81,8 @@ func summarizeWithRetry(client monitoring.MonitoringClient, req monitoring.Summa
     return resp, err
 }
 
-// collectMetrics queries  metric individually and set gauge.
-func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, config MetricConfig) {
+// collectMetrics queries each metric and sets the gauge.
+func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, config MetricConfig, gauge *prometheus.GaugeVec) {
     for _, ten := range tenants.Tenancies {
         client.SetRegion(ten.Region)
         now := time.Now().UTC()
@@ -106,7 +91,6 @@ func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, c
 
         for _, ns := range config.Metrics {
             for _, name := range ns.Names {
-                // single-metric MQL
                 query := fmt.Sprintf("%s[1m].mean()", name)
                 req := monitoring.SummarizeMetricsDataRequest{
                     CompartmentId:          common.String(ten.CompartmentID),
@@ -134,8 +118,6 @@ func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, c
                             continue
                         }
                         latest := item.AggregatedDatapoints[len(item.AggregatedDatapoints)-1]
-
-                        // Extract resource labels
                         resID := item.Dimensions["resourceId"]
                         dispName := item.Dimensions["resourceDisplayName"]
                         metricLabel := name
@@ -143,7 +125,7 @@ func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, c
                             metricLabel = *item.Name
                         }
 
-                        ociMetric.With(prometheus.Labels{
+                        gauge.With(prometheus.Labels{
                             "tenancy":               ten.Name,
                             "region":                ten.Region,
                             "namespace":             ns.Namespace,
@@ -153,7 +135,6 @@ func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, c
                         }).Set(*latest.Value)
                     }
                 }
-                // Throttle to max 10 TPS
                 time.Sleep(100 * time.Millisecond)
             }
         }
@@ -161,15 +142,15 @@ func collectMetrics(client monitoring.MonitoringClient, tenants TenancyConfig, c
 }
 
 func main() {
-    cfg := flag.String("config", "", "Path to OCI config file")
+    cfgPath := flag.String("config", "", "Path to OCI config file")
     listen := flag.String("listen-address", ":8080", "Metrics listen address")
     flag.Parse()
 
-    if *cfg == "" {
+    if *cfgPath == "" {
         fmt.Println("Missing required -config flag")
         os.Exit(1)
     }
-    provider, err := common.ConfigurationProviderFromFile(*cfg, "")
+    provider, err := common.ConfigurationProviderFromFile(*cfgPath, "")
     if err != nil {
         log.Fatalf("Failed loading OCI config: %v", err)
     }
@@ -180,16 +161,25 @@ func main() {
 
     tenants, metricsCfg := loadConfigs()
 
-    // Start collection
+    // Create a custom registry exposing only OCI metrics
+    gauge := prometheus.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "oci_metric_value",
+            Help: "OCI Monitoring metric value",
+        },
+        []string{"tenancy", "region", "namespace", "metric", "resource_id", "resource_display_name"},
+    )
+    registry := prometheus.NewRegistry()
+    registry.MustRegister(gauge)
+
     go func() {
         for {
-            collectMetrics(client, tenants, metricsCfg)
+            collectMetrics(client, tenants, metricsCfg, gauge)
             time.Sleep(1 * time.Minute)
         }
     }()
 
-    // Expose metrics
-    http.Handle("/metrics", promhttp.Handler())
+    http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
     log.Printf("Exporter listening on %s", *listen)
     log.Fatal(http.ListenAndServe(*listen, nil))
 }
